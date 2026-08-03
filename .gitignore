@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build output
+bin/
+obj/
+dist/
+out/
+
+# .NET
+*.user
+*.suo
+.vs/
+
+# Claude Code local config
+.claude/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log

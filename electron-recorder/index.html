@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>系统音频录制</title>
+  <style>
+    body {
+      font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      padding: 32px;
+      max-width: 640px;
+      margin: 0 auto;
+      color: #222;
+      line-height: 1.6;
+    }
+    h1 { font-size: 22px; margin-bottom: 4px; }
+    .hint { color: #666; font-size: 13px; margin-bottom: 20px; }
+    .row { margin: 16px 0; }
+    label { display: block; margin-bottom: 6px; font-size: 13px; color: #555; }
+    select { width: 100%; padding: 8px; font-size: 14px; box-sizing: border-box; }
+    .controls { margin-top: 20px; }
+    button {
+      padding: 10px 22px;
+      font-size: 14px;
+      cursor: pointer;
+      border: none;
+      border-radius: 4px;
+      background: #1a73e8;
+      color: #fff;
+      margin-right: 8px;
+    }
+    button:hover { background: #1557b0; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.secondary { background: #5f6368; }
+    button.secondary:hover { background: #3c4043; }
+    button.stop { background: #d93025; }
+    button.stop:hover { background: #b3261e; }
+    .hidden { display: none; }
+    .status {
+      margin: 16px 0;
+      padding: 10px 12px;
+      background: #f1f3f4;
+      border-radius: 4px;
+      font-size: 13px;
+      word-break: break-all;
+    }
+    .status.error { background: #fce8e6; color: #b3261e; }
+    .status.success { background: #e6f4ea; color: #137333; }
+  </style>
+</head>
+<body>
+  <h1>系统音频录制</h1>
+  <p class="hint">选择要录制的输出设备（扬声器/耳机），录音会抓取该设备的 loopback 信号。</p>
+
+  <div class="row">
+    <label for="device">输出设备</label>
+    <select id="device" disabled>
+      <option>加载中…</option>
+    </select>
+  </div>
+
+  <div class="controls">
+    <button id="startBtn" disabled>开始录制</button>
+    <button id="stopBtn" class="stop hidden">停止录制</button>
+    <button id="refreshBtn" class="secondary">刷新设备</button>
+  </div>
+
+  <div id="status" class="status">就绪。</div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>系统音频录制</title>
+  <style>
+    body {
+      font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      padding: 40px;
+      max-width: 640px;
+      margin: 0 auto;
+      color: #222;
+      line-height: 1.6;
+    }
+    h1 { font-size: 22px; margin-bottom: 8px; }
+    .hint { color: #666; font-size: 14px; margin-bottom: 24px; }
+    .controls { margin-bottom: 16px; }
+    button {
+      padding: 10px 22px;
+      font-size: 15px;
+      cursor: pointer;
+      border: none;
+      border-radius: 4px;
+      background: #1a73e8;
+      color: #fff;
+      margin-right: 8px;
+    }
+    button:hover { background: #1557b0; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.stop { background: #d93025; }
+    button.stop:hover { background: #b3261e; }
+    .hidden { display: none; }
+    .status {
+      margin: 16px 0;
+      padding: 10px 12px;
+      background: #f1f3f4;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+    .status.error { background: #fce8e6; color: #b3261e; }
+    .download {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 10px 22px;
+      background: #188038;
+      color: #fff;
+      text-decoration: none;
+      border-radius: 4px;
+      font-size: 15px;
+    }
+    .download:hover { background: #0d652d; }
+  </style>
+</head>
+<body>
+  <h1>系统音频录制</h1>
+  <p class="hint">
+    点击"开始录制"后，浏览器会弹出共享对话框。请选择"共享标签页"或"共享屏幕"，
+    并务必勾选底部的"共享音频"复选框，否则录不到声音。
+  </p>
+
+  <div class="controls">
+    <button id="startBtn">开始录制</button>
+    <button id="stopBtn" class="stop hidden">停止录制</button>
+  </div>
+
+  <div id="status" class="status">就绪。</div>
+  <div id="downloadArea"></div>
+
+  <script>
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const statusEl = document.getElementById('status');
+    const downloadArea = document.getElementById('downloadArea');
+
+    let mediaRecorder = null;
+    let chunks = [];
+    let stream = null;
+
+    function setStatus(text, isError) {
+      statusEl.textContent = text;
+      statusEl.classList.toggle('error', !!isError);
+    }
+
+    function resetUI() {
+      startBtn.classList.remove('hidden');
+      stopBtn.classList.add('hidden');
+    }
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+      setStatus('当前浏览器不支持 getDisplayMedia。请使用 Chrome/Edge，并通过 HTTPS 或 localhost 访问。', true);
+      startBtn.disabled = true;
+    }
+
+    startBtn.addEventListener('click', async () => {
+      downloadArea.innerHTML = '';
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      } catch (e) {
+        setStatus('已取消共享。');
+        return;
+      }
+
+      // 立即丢弃视频轨道，只保留音频
+      stream.getVideoTracks().forEach(t => t.stop());
+
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        setStatus('未检测到音频轨道。请在共享对话框中勾选"共享音频"后重试。', true);
+        stream.getTracks().forEach(t => t.stop());
+        stream = null;
+        return;
+      }
+
+      // 用户从浏览器 UI 停止共享时，同步停止录制
+      audioTracks[0].addEventListener('ended', () => {
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+          mediaRecorder.stop();
+        }
+      });
+
+      chunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) chunks.push(e.data);
+      };
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `recording-${Date.now()}.webm`;
+        a.textContent = '下载录音 (.webm)';
+        a.className = 'download';
+        downloadArea.innerHTML = '';
+        downloadArea.appendChild(a);
+
+        if (stream) {
+          stream.getTracks().forEach(t => t.stop());
+          stream = null;
+        }
+        mediaRecorder = null;
+        resetUI();
+        setStatus('录制完成，可点击下方链接下载。');
+      };
+
+      mediaRecorder.start();
+      startBtn.classList.add('hidden');
+      stopBtn.classList.remove('hidden');
+      setStatus('录制中… 点击"停止录制"结束。');
+    });
+
+    stopBtn.addEventListener('click', () => {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+    });
+  </script>
+</body>
+</html>

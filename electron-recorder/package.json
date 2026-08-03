@@ -1,0 +1,13 @@
+{
+  "name": "electron-audio-recorder",
+  "version": "1.0.0",
+  "description": "Windows system audio recorder with per-device loopback capture",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build:capture": "dotnet publish ./capture/capture.csproj -c Release -r win-x64 --self-contained -o ./bin/capture /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0"
+  }
+}
