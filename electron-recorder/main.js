@@ -2,6 +2,8 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
+const fs = require('fs');
+const { createWavHeader, float32ToInt16Pcm } = require('./wav-utils.js');
 
 // capture.exe 是独立编译的音频采集程序，负责枚举设备与实际录制
 // 开发环境从源码目录加载，打包后从 resources 目录加载
@@ -12,6 +14,10 @@ const CAPTURE_EXE = app.isPackaged
 let mainWindow = null;        // 主窗口引用，关闭后置 null
 let captureProcess = null;    // 当前录制中的 capture.exe 子进程；为 null 表示未在录制
 let currentOutputPath = null; // 当前录制文件保存路径，停止后用于通知渲染进程
+
+let wavFd = null;        // 混音 WAV 文件描述符，null 表示未打开
+let wavPath = null;      // WAV 文件路径，停止后返回给渲染进程
+let wavDataBytes = 0;    // 已写入的 PCM 数据字节数，停止时用于回填 WAV 头
 
 // 创建应用主窗口，加载 index.html，并配置安全相关的 webPreferences
 function createWindow() {
@@ -67,14 +73,40 @@ function stopCaptureProcess() {
   });
 }
 
+// 退出前先停掉录制子进程并收尾 WAV 文件，否则 capture.exe 会变孤儿、WAV 头不完整
+function stopWavSaveInternal() {
+  if (wavFd === null) return null;
+  // 回填 RIFF chunk size（偏移 4）和 data chunk size（偏移 40）
+  const sizeBuf = Buffer.alloc(4);
+  sizeBuf.writeUInt32LE(36 + wavDataBytes, 0);
+  fs.writeSync(wavFd, sizeBuf, 0, 4, 4);
+  sizeBuf.writeUInt32LE(wavDataBytes, 0);
+  fs.writeSync(wavFd, sizeBuf, 0, 4, 40);
+  fs.closeSync(wavFd);
+  const savedPath = wavPath;
+  wavFd = null;
+  wavPath = null;
+  wavDataBytes = 0;
+  return savedPath;
+}
+
 // 退出前先停掉录制子进程，否则 capture.exe 会变成孤儿进程继续写文件
 app.on('before-quit', (event) => {
   if (isQuitting) return;
-  if (captureProcess && !captureProcess.killed) {
+  const needsCaptureStop = captureProcess && !captureProcess.killed;
+  const needsWavStop = wavFd !== null;
+  if (needsCaptureStop || needsWavStop) {
     // 阻止默认退出，等子进程清理完再调用 app.quit() 完成退出
     event.preventDefault();
     isQuitting = true;
-    stopCaptureProcess().then(() => app.quit());
+    Promise.resolve()
+      .then(() => needsCaptureStop ? stopCaptureProcess() : null)
+      .then(() => {
+        if (needsWavStop) {
+          try { stopWavSaveInternal(); } catch {}
+        }
+      })
+      .then(() => app.quit());
   }
 });
 
@@ -168,4 +200,111 @@ ipcMain.handle('stop-recording', async () => {
     captureProcess.stdin.end();
   } catch {}
   return { ok: true };
+});
+
+// ─── System audio streaming (for ASR) ───────────────────────────────
+// Spawns capture.exe in stream mode, forwards stdout float32 PCM to renderer.
+// capture.exe stream <deviceId> 输出 16kHz mono float32 PCM 到 stdout，
+// READY 信号走 stderr。主进程把 stdout 二进制块转发给渲染进程。
+
+ipcMain.handle('start-system-audio', async (event, deviceId) => {
+  if (captureProcess) {
+    throw new Error('capture.exe already running');
+  }
+  if (!deviceId) {
+    throw new Error('deviceId required');
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(CAPTURE_EXE, ['stream', deviceId]);
+    let ready = false;
+    let stderr = '';
+
+    child.stderr.on('data', d => {
+      const text = d.toString();
+      stderr += text;
+      // capture.exe 初始化完成后在 stderr 输出 READY
+      if (!ready && text.includes('READY')) {
+        ready = true;
+        captureProcess = child;
+        resolve({ ok: true });
+      }
+    });
+
+    // 把 stdout 二进制块作为 Float32Array 转发给渲染进程
+    child.stdout.on('data', buf => {
+      if (!ready) return; // READY 之前不应有数据，保险起见过滤
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        // 切出新 ArrayBuffer（底层 Buffer 可能被复用）
+        const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        mainWindow.webContents.send('system-audio-chunk', new Float32Array(ab));
+      }
+    });
+
+    child.on('error', err => {
+      if (!ready) reject(new Error(`无法启动 capture.exe：${err.message}`));
+    });
+
+    child.on('close', code => {
+      captureProcess = null;
+      if (!ready) {
+        reject(new Error(`capture.exe stream 启动失败（exit ${code}）：${stderr}`));
+        return;
+      }
+      // 通知渲染进程流已结束（录音中途结束可能是设备被拔）
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('system-audio-stopped', { code });
+      }
+    });
+  });
+});
+
+// 停止系统音频采集：发 stop 命令，真正退出由 close 事件触发
+ipcMain.handle('stop-system-audio', async () => {
+  if (!captureProcess) return { ok: false };
+  try {
+    captureProcess.stdin.write('stop\n');
+    captureProcess.stdin.end();
+  } catch {}
+  return { ok: true };
+});
+
+// ─── Mixed-audio WAV backup ────────────────────────────────────────
+// 渲染进程发来混音后的 float32 块，主进程转 16-bit PCM 写入 WAV。
+// 开始时写占位 WAV 头（size=0），停止时回填真实 size。
+
+ipcMain.handle('start-wav-save', async () => {
+  if (wavFd !== null) {
+    throw new Error('WAV file already open');
+  }
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: '保存录音',
+    defaultPath: `recording-${Date.now()}.wav`,
+    filters: [{ name: 'WAV', extensions: ['wav'] }],
+  });
+  if (result.canceled || !result.filePath) {
+    return { ok: false, canceled: true };
+  }
+  wavPath = result.filePath;
+  wavDataBytes = 0;
+  // 'w' 创建/截断；fs.writeSync 带位置参数会先 seek，所以后续可以回填头
+  wavFd = fs.openSync(wavPath, 'w');
+  // 占位头（data size = 0），停止时回填
+  const header = createWavHeader(16000, 1, 0);
+  fs.writeSync(wavFd, header, 0, 44, 0);
+  return { ok: true, path: wavPath };
+});
+
+// 渲染进程推送混音 float32 块；转 int16 追加到文件
+ipcMain.on('mixed-audio-chunk', (event, float32Array) => {
+  if (wavFd === null) return;
+  const pcm = float32ToInt16Pcm(float32Array);
+  fs.writeSync(wavFd, pcm, 0, pcm.length, null); // null position = 追加
+  wavDataBytes += pcm.length;
+});
+
+ipcMain.handle('stop-wav-save', async () => {
+  const savedPath = stopWavSaveInternal();
+  if (savedPath === null) return { ok: false };
+  return { ok: true, path: savedPath };
 });
