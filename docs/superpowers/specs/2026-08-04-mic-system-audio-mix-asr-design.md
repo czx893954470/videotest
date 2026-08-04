@@ -82,9 +82,7 @@ Build a recording feature that captures both the microphone and the system (loop
 
 - New branch `if (command == "stream")` taking `<deviceId>`.
 - Use `WasapiLoopbackCapture(device)`; capture.WaveFormat is the device mix format (typically 48kHz stereo float32).
-- Build a resampler to 16kHz mono float32:
-  - `WaveFormatConversionStream` to mono if stereo.
-  - `WdlResamplingStream` (or `MediaFoundationResampler`) 48000 → 16000.
+- Build a resampler to 16kHz mono float32 using NAudio's `MediaFoundationResampler` (lower latency on Windows, simpler API than `WdlResamplingStream`). Input = `capture.WaveFormat` (device mix format, typically 48kHz stereo float32), output = `WaveFormat.CreateIeeeFloatWaveFormat(16000, 1)`. The resampler handles channel downmix and sample rate conversion in one step.
 - In `DataAvailable`: push captured bytes through the resampler, write resampled float32 bytes to `Console.OpenStandardOutput()` via a `BinaryWriter`.
 - Print `"READY\n"` to `Console.Error` once `StartRecording()` returns.
 - Read `Console.In` for `"stop"`; on receipt, `StopRecording()`, wait for `RecordingStopped`, flush, exit 0.
@@ -138,18 +136,18 @@ contextBridge.exposeInMainWorld('api', {
 
 **renderer.js flow:**
 1. On load: `api.getDevices()` → populate device select.
-2. Start button:
-   - `await api.startWavSave()` → get path.
-   - `await connectWebSocket()` → wait `session_started`.
-   - `await api.startSystemAudio(deviceId)` → capture.exe ready.
+2. Start button (order matters - worklet must be ready before system audio chunks arrive):
+   - `await connectWebSocket()` → wait `session_started` (fail-fast on backend down).
+   - `await api.startWavSave()` → get path (fail-fast on user cancel / disk error).
    - `getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}})`.
    - `new AudioContext({sampleRate:16000})`.
    - `audioContext.audioWorklet.addModule('mixer-processor.js')`.
    - Create `AudioWorkletNode` (1 in, 1 out, mono).
    - `createMediaStreamSource(micStream).connect(worklet)`.
-   - Subscribe `api.onSystemAudioChunk(f32 => worklet.port.postMessage({type:'system', samples: f32}))`.
    - Subscribe `worklet.port.onmessage`:
      - On `mixed`: `ws.send(mixed.buffer)` and `api.sendMixedChunk(mixed)`.
+   - Subscribe `api.onSystemAudioChunk(f32 => worklet.port.postMessage({type:'system', samples: f32}))`.
+   - `await api.startSystemAudio(deviceId)` → capture.exe ready (last step - chunks start flowing immediately after).
 3. Stop button:
    - Set `isRecording = false`.
    - Disconnect worklet, close AudioContext, stop mic tracks.
