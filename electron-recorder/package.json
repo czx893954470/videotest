@@ -5,9 +5,47 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "build:capture": "dotnet publish ./capture/capture.csproj -c Release -r win-x64 --self-contained -o ./bin/capture /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true"
+    "build:capture": "dotnet publish ./capture/capture.csproj -c Release -r win-x64 --self-contained -o ./bin/capture /p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true",
+    "dist": "electron-builder --win"
   },
   "devDependencies": {
-    "electron": "^31.0.0"
+    "electron": "^31.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.example.electron-audio-recorder",
+    "productName": "AudioRecorder",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "renderer.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "bin/capture",
+        "to": "bin/capture",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AudioRecorder"
+    }
   }
 }

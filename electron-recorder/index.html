@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>系统音频录制</title>
   <style>
+    /* 整体页面布局：居中、限宽、系统字体 */
     body {
       font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
       padding: 32px;
@@ -19,6 +20,7 @@
     label { display: block; margin-bottom: 6px; font-size: 13px; color: #555; }
     select { width: 100%; padding: 8px; font-size: 14px; box-sizing: border-box; }
     .controls { margin-top: 20px; }
+    /* 按钮基础样式 + 三种色调：主操作 / 次要 / 停止 */
     button {
       padding: 10px 22px;
       font-size: 14px;
@@ -36,6 +38,7 @@
     button.stop { background: #d93025; }
     button.stop:hover { background: #b3261e; }
     .hidden { display: none; }
+    /* 状态栏：默认灰底，error 红、success 绿 */
     .status {
       margin: 16px 0;
       padding: 10px 12px;
@@ -52,6 +55,7 @@
   <h1>系统音频录制</h1>
   <p class="hint">选择要录制的输出设备（扬声器/耳机），录音会抓取该设备的 loopback 信号。</p>
 
+  <!-- 设备选择下拉框 -->
   <div class="row">
     <label for="device">输出设备</label>
     <select id="device" disabled>
@@ -59,12 +63,14 @@
     </select>
   </div>
 
+  <!-- 操作按钮：开始 / 停止 / 刷新 -->
   <div class="controls">
     <button id="startBtn" disabled>开始录制</button>
     <button id="stopBtn" class="stop hidden">停止录制</button>
     <button id="refreshBtn" class="secondary">刷新设备</button>
   </div>
 
+  <!-- 状态栏：显示当前操作结果或错误信息 -->
   <div id="status" class="status">就绪。</div>
 
   <script src="renderer.js"></script>
