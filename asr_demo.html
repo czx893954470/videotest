@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>实时语音识别</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        h1 {
+            font-size: 24px;
+            font-weight: 500;
+        }
+        .status {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+            background: #333;
+        }
+        .status.connected {
+            background: #2ecc71;
+            color: #000;
+        }
+        .status.disconnected {
+            background: #e74c3c;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-start {
+            background: #3498db;
+            color: #fff;
+        }
+        .btn-start:hover {
+            background: #2980b9;
+        }
+        .btn-stop {
+            background: #e74c3c;
+            color: #fff;
+        }
+        .btn-stop:hover {
+            background: #c0392b;
+        }
+        .btn-start:disabled, .btn-stop:disabled, .btn-play:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        input[type="file"] {
+            display: none;
+        }
+        .audio-info {
+            font-size: 14px;
+            color: #888;
+            margin-left: 10px;
+        }
+        .transcript {
+            background: #16213e;
+            border-radius: 12px;
+            padding: 20px;
+            min-height: 400px;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+        .transcript::-webkit-scrollbar {
+            width: 8px;
+        }
+        .transcript::-webkit-scrollbar-track {
+            background: #1a1a2e;
+        }
+        .transcript::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 4px;
+        }
+        .sentence {
+            margin-bottom: 16px;
+            line-height: 1.6;
+        }
+        .sentence.final {
+            color: #eee;
+        }
+        .sentence.interim {
+            color: #888;
+            border-left: 3px solid #3498db;
+            padding-left: 12px;
+            position: relative;
+        }
+        .sentence.interim::after {
+            content: '';
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background: #3498db;
+            border-radius: 50%;
+            margin-left: 8px;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+        .empty {
+            color: #666;
+            text-align: center;
+            padding: 100px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>实时语音识别</h1>
+            <span class="status disconnected" id="status">未连接</span>
+        </div>
+
+        <div class="controls">
+            <button class="btn-start" id="btnStart">开始录音</button>
+            <button class="btn-stop" id="btnStop" disabled>停止</button>
+            <button class="btn-file" id="btnFile">上传音频</button>
+            <button class="btn-play" id="btnPlay" disabled>播放音频</button>
+            <input type="file" id="fileInput" accept="audio/*">
+            <span class="audio-info" id="audioInfo"></span>
+            <label style="margin-left: 10px;">识别语言:</label>
+            <select id="asrLang">
+                <option value="zh">中文</option>
+                <option value="en">English</option>
+                <option value="hu">Hungarian</option>
+                <option value="ms">Malay</option>
+                <option value="es">Spanish</option>
+            </select>
+            <label style="margin-left: 10px;">翻译:</label>
+            <select id="targetLang">
+                <option value="">不翻译</option>
+                <option value="zh">中文</option>
+                <option value="en">English</option>
+            </select>
+            <label style="margin-left: 10px;">服务器:</label>
+            <input type="text" id="serverUrl" value="ws://192.168.4.58:8080/ws/asr" style="width: 220px;">
+        </div>
+
+        <div class="transcript" id="transcript">
+            <div class="empty">点击"开始录音"开始识别</div>
+        </div>
+    </div>
+
+    <script>
+                let ws = null;
+        let audioContext = null;
+        let mediaStream = null;
+        let workletNode = null;
+        let isRecording = false;
+        let audioFile = null;
+        let audioBuffer = null;
+        let playbackSource = null;
+        let isPlaying = false;
+
+        // AudioWorklet 代码（通过 data URL 加载）
+        const audioWorkletCode = `
+            class AudioRecorderProcessor extends AudioWorkletProcessor {
+                process(inputs, outputs, parameters) {
+                    const input = inputs[0];
+                    if (input.length > 0) {
+                        const channelData = input[0];
+                        this.port.postMessage({
+                            type: 'audio',
+                            channelData: new Float32Array(channelData)
+                        });
+                    }
+                    return true;
+                }
+            }
+            registerProcessor('audio-recorder-processor', AudioRecorderProcessor);
+        `;
+        const workletDataUrl = 'data:application/javascript;base64,' + btoa(audioWorkletCode);
+
+        const transcriptDiv = document.getElementById('transcript');
+        const statusSpan = document.getElementById('status');
+        const btnStart = document.getElementById('btnStart');
+        const btnStop = document.getElementById('btnStop');
+        const btnFile = document.getElementById('btnFile');
+        const btnPlay = document.getElementById('btnPlay');
+        const fileInput = document.getElementById('fileInput');
+        const audioInfo = document.getElementById('audioInfo');
+        const targetLangSelect = document.getElementById('targetLang');
+        const asrLangSelect = document.getElementById('asrLang');
+
+        // 存储识别结果
+        const sentences = new Map(); // sentenceId -> { text, isFinal }
+        const translations = new Map(); // sentenceId -> { text, isFinal }
+        let latestSentenceId = 0;   // 当前正在输入的句子 ID
+
+        function updateDisplay() {
+            let html = '';
+            const sortedIds = Array.from(sentences.keys()).sort((a, b) => a - b);
+
+            for (const sid of sortedIds) {
+                const s = sentences.get(sid);
+                const t = translations.get(sid);
+                if (s.isFinal) {
+                    // Pass2 确认后的句子 - 有翻译就显示翻译，无翻译才显示原文
+                    if (t) {
+                        html += `<div class="sentence final">${escapeHtml(t.text)}</div>`;
+                    } else {
+                        html += `<div class="sentence final">${escapeHtml(s.text)}</div>`;
+                    }
+                } else if (sid === latestSentenceId && !s.isFinal) {
+                    // 最新的未确认句子 - 显示识别中样式
+                    if (t) {
+                        html += `<div class="sentence interim">${escapeHtml(t.text)}</div>`;
+                    } else {
+                        html += `<div class="sentence interim">${escapeHtml(s.text)}</div>`;
+                    }
+                }
+            }
+
+            if (html) {
+                transcriptDiv.innerHTML = html;
+            } else {
+                transcriptDiv.innerHTML = '<div class="empty">等待识别中...</div>';
+            }
+
+            // 滚动到底部
+            transcriptDiv.scrollTop = transcriptDiv.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function handlePass1(sentenceId, text) {
+            latestSentenceId = sentenceId;
+
+            if (!sentences.has(sentenceId)) {
+                sentences.set(sentenceId, { text: text, isFinal: false });
+            } else {
+                const s = sentences.get(sentenceId);
+                if (s.isFinal) return; // 已被 Pass2 确认，不更新
+
+                // 增量拼接：每次 Pass1 结果都追加到已有内容
+                if (text !== s.text) {
+                    // 检查新文本是否包含旧文本（增量更新）
+                    if (text.startsWith(s.text)) {
+                        s.text = text;
+                    } else {
+                        // 不是增量，直接拼接（可能有缺失部分）
+                        s.text = s.text + text;
+                    }
+                }
+            }
+        }
+
+        function handlePass2(sentenceId, text) {
+            // Pass2 直接替换该 sentence_id 的所有 Pass1 内容
+            sentences.set(sentenceId, { text: text, isFinal: true });
+
+            // 如果这是最新的句子，更新 latestSentenceId
+            if (sentenceId >= latestSentenceId) {
+                latestSentenceId = sentenceId + 1;
+            }
+        }
+
+        function connectWebSocket() {
+            const serverUrl = document.getElementById('serverUrl').value;
+            return new Promise((resolve, reject) => {
+                ws = new WebSocket(serverUrl);
+
+                ws.onopen = () => {
+                    const targetLang = targetLangSelect.value;
+                    console.log('[DEBUG] target_language:', targetLang);
+                    ws.send(JSON.stringify({
+                        type: 'session_start',
+                        language: 'zh',
+                        prompt: '会议场景',
+                        target_language: targetLang
+                    }));
+                };
+
+                ws.onmessage = (event) => {
+                    const data = typeof event.data === 'string'
+                        ? JSON.parse(event.data)
+                        : null;
+
+                    if (data && data.type === 'asr') {
+                        const sentenceId = data.sentence_id;
+                        const text = data.text;
+                        const pass = data.pass;
+
+                        if (pass === 1) {
+                            handlePass1(sentenceId, text);
+                        } else {
+                            handlePass2(sentenceId, text);
+                        }
+
+                        updateDisplay();
+                    } else if (data && data.type === 'trans') {
+                        // 处理翻译结果
+                        const sentenceId = data.sentence_id;
+                        const text = data.text;
+                        const isFinal = data.is_final;
+                        const pass = data.pass || 1;
+                        console.log(`[Trans] pass=${pass}, sid=${sentenceId}, text=${text.substring(0, 30)}...`);
+
+                        // 增量拼接逻辑
+                        if (!translations.has(sentenceId)) {
+                            translations.set(sentenceId, { text: text, isFinal: isFinal });
+                        } else {
+                            const t = translations.get(sentenceId);
+                            if (t.isFinal) return; // 已定稿不更新
+
+                            // 检查新文本是否包含旧文本（增量更新）
+                            if (text !== t.text) {
+                                if (text.startsWith(t.text)) {
+                                    t.text = text;
+                                } else {
+                                    t.text = t.text + text;
+                                }
+                            }
+                            t.isFinal = isFinal;
+                        }
+                        updateDisplay();
+                    } else if (data && data.type === 'session_started') {
+                        resolve();
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    reject(error);
+                };
+
+                ws.onclose = () => {
+                    if (isRecording) {
+                        stopRecording();
+                    }
+                    updateStatus(false);
+                };
+            });
+        }
+
+        function updateStatus(connected) {
+            if (connected) {
+                statusSpan.textContent = '已连接';
+                statusSpan.className = 'status connected';
+            } else {
+                statusSpan.textContent = '未连接';
+                statusSpan.className = 'status disconnected';
+            }
+        }
+
+        async function startRecording() {
+            console.log('[DEBUG] startRecording BEGIN');
+            try {
+                // 连接 WebSocket
+                await connectWebSocket();
+                console.log('[DEBUG] WebSocket connected');
+                updateStatus(true);
+
+                // 获取麦克风
+                mediaStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+
+                audioContext = new AudioContext({ sampleRate: 16000 });
+
+                // 加载 AudioWorklet
+                await audioContext.audioWorklet.addModule(workletDataUrl);
+
+                // 创建 AudioWorkletNode
+                workletNode = new AudioWorkletNode(audioContext, 'audio-recorder-processor', {
+                    numberOfInputs: 1,
+                    numberOfOutputs: 1,
+                    channelCount: 1,
+                    channelCountMode: 'explicit',
+                    channelInterpretation: 'speakers'
+                });
+
+                // 接收音频数据
+                let frameCount = 0;
+                workletNode.port.onmessage = (e) => {
+                    if (!isRecording || e.data.type !== 'audio') return;
+
+                    const inputData = e.data.channelData;
+                    console.log('[DEBUG] audio frame', ++frameCount, 'samples:', inputData.length);
+
+                    const float32Data = new Float32Array(inputData);
+                    const audioBytes = float32Data.buffer;
+
+                    if (ws && ws.readyState === 1) {
+                        ws.send(audioBytes);
+                        if (frameCount <= 3) console.log('[DEBUG] SENT audio, size:', audioBytes.byteLength);
+                    } else {
+                        console.log('[DEBUG] SKIP - ws:', ws ? 'state=' + ws.readyState : 'null');
+                    }
+                };
+
+                const source = audioContext.createMediaStreamSource(mediaStream);
+                source.connect(workletNode);
+                workletNode.connect(audioContext.destination);
+
+                isRecording = true;
+                console.log('[DEBUG] isRecording = true, ws readyState:', ws ? ws.readyState : 'null');
+                btnStart.disabled = true;
+                btnStop.disabled = false;
+
+            } catch (error) {
+                console.error('启动失败:', error);
+                alert('启动失败: ' + error.message);
+                updateStatus(false);
+            }
+        }
+
+        function stopRecording() {
+            isRecording = false;
+
+            if (workletNode) {
+                workletNode.disconnect();
+                workletNode = null;
+            }
+
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+            }
+
+            if (ws) {
+                ws.send(JSON.stringify({ type: 'end_input' }));
+                setTimeout(() => {
+                    ws.close();
+                    ws = null;
+                }, 500);
+            }
+
+            btnStart.disabled = false;
+            btnStop.disabled = true;
+            updateStatus(false);
+        }
+
+        btnStart.addEventListener('click', startRecording);
+        btnStop.addEventListener('click', stopRecording);
+
+        // 文件上传
+        btnFile.addEventListener('click', () => fileInput.click());
+
+        fileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            audioFile = file;
+            audioInfo.textContent = file.name;
+
+            // 加载音频文件
+            audioContext = new AudioContext({ sampleRate: 16000 });
+            const arrayBuffer = await file.arrayBuffer();
+            audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+            const duration = audioBuffer.duration.toFixed(1);
+            audioInfo.textContent = `${file.name} (${duration}s)`;
+
+            btnPlay.disabled = false;
+        });
+
+        // 播放音频
+        btnPlay.addEventListener('click', async () => {
+            if (isPlaying) return;
+
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                try {
+                    await connectWebSocket();
+                    updateStatus(true);
+                } catch (error) {
+                    alert('连接失败: ' + error.message);
+                    return;
+                }
+            }
+
+            isPlaying = true;
+            btnPlay.disabled = true;
+            btnStart.disabled = true;
+            btnStop.disabled = false;
+
+            // 每次发送 200ms 音频 (与测试客户端一致)
+            const chunkMs = 200;
+            const sampleRate = audioBuffer.sampleRate;
+            const samplesPerChunk = Math.floor(sampleRate * chunkMs / 1000); // 16000Hz = 3200 samples
+            const interval = chunkMs; // 200ms
+
+            console.log(`音频信息: sampleRate=${sampleRate}, samplesPerChunk=${samplesPerChunk}`);
+
+            let offset = 0;
+
+            const sendChunks = () => {
+                if (offset >= audioBuffer.length || !ws || ws.readyState !== WebSocket.OPEN) {
+                    isPlaying = false;
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'stop' }));
+                    }
+                    btnPlay.disabled = false;
+                    btnStart.disabled = false;
+                    btnStop.disabled = true;
+                    return;
+                }
+
+                const end = Math.min(offset + samplesPerChunk, audioBuffer.length);
+                const channelData = audioBuffer.getChannelData(0);
+                const chunk = channelData.slice(offset, end);
+
+                const float32Data = new Float32Array(chunk);
+                ws.send(float32Data.buffer);
+
+                offset = end;
+                setTimeout(sendChunks, interval);
+            };
+
+            sendChunks();
+        });
+
+        // 识别语言切换
+        asrLangSelect.addEventListener('change', () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'change_language',
+                    language: asrLangSelect.value
+                }));
+                console.log('[DEBUG] 切换识别语言为:', asrLangSelect.value);
+            }
+        });
+
+        // 翻译语言切换
+        targetLangSelect.addEventListener('change', () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'change_target_language',
+                    target_language: targetLangSelect.value
+                }));
+                console.log('[DEBUG] 切换翻译语言为:', targetLangSelect.value);
+            }
+        });
+    </script>
+</body>
+</html>
