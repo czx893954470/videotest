@@ -287,11 +287,12 @@ ipcMain.handle('start-wav-save', async () => {
   }
   wavPath = result.filePath;
   wavDataBytes = 0;
-  // 'w' 创建/截断；fs.writeSync 带位置参数会先 seek，所以后续可以回填头
+  // 'w' 创建/截断。注意：用 null position 写入让文件指针正常推进，
+  // 后续数据块也用 null position 追加；停止时用显式 position 回填头。
   wavFd = fs.openSync(wavPath, 'w');
   // 占位头（data size = 0），停止时回填
   const header = createWavHeader(16000, 1, 0);
-  fs.writeSync(wavFd, header, 0, 44, 0);
+  fs.writeSync(wavFd, header, 0, 44, null);
   return { ok: true, path: wavPath };
 });
 
