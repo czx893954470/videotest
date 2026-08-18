@@ -1,13 +1,14 @@
 // AudioWorklet 处理器：把麦克风（input 0）和系统音频（通过 port 消息塞进环形缓冲）
-// 混音，每个 process() 调用产出一个 128 采样的混音块，回传给主线程。
+// 混音，每个 process() 调用产出一个 128 采样点的混音块，回传给主线程。
 //
 // 采样率 16kHz（由渲染进程的 AudioContext 设定），render quantum 128 样本 = 8ms，
 // 输出单声道 float32。
 //
 // 主线程发来的消息：
-//   { type: 'system', samples: Float32Array }  -> 追加到环形缓冲
+//   { type: 'config', mic: boolean, system: boolean }  -> 设置启用源（默认都 true）
+//   { type: 'system', samples: Float32Array }           -> 追加到环形缓冲
 // 发给主线程的消息：
-//   { type: 'mixed', samples: Float32Array }   -> 每次 process() 一个 128 样本块
+//   { type: 'mixed', samples: Float32Array }            -> 每次 process() 一个 128 样本块
 
 const RING_SIZE = 16384; // ~1s @ 16kHz；足够吸收 IPC 抖动
 
@@ -17,8 +18,13 @@ class MixerProcessor extends AudioWorkletProcessor {
     this.ring = new Float32Array(RING_SIZE);
     this.readPos = 0;
     this.writePos = 0;
+    this.micEnabled = true;
+    this.systemEnabled = true;
     this.port.onmessage = (e) => {
-      if (e.data.type === 'system') {
+      if (e.data.type === 'config') {
+        this.micEnabled = e.data.mic;
+        this.systemEnabled = e.data.system;
+      } else if (e.data.type === 'system') {
         this._pushRing(e.data.samples);
       }
     };
@@ -62,10 +68,11 @@ class MixerProcessor extends AudioWorkletProcessor {
     }
     this._readRing(this._sysTemp, out.length);
 
-    // 等权重混音：0.5 * mic + 0.5 * system
+    // 满增益混音：启用的源各以 1.0 相加。两源都开时可能削波，由用户选择。
     for (let i = 0; i < out.length; i++) {
-      const mic = micCh ? micCh[i] : 0;
-      out[i] = 0.5 * mic + 0.5 * this._sysTemp[i];
+      const mic = (this.micEnabled && micCh) ? micCh[i] : 0;
+      const sys = this.systemEnabled ? this._sysTemp[i] : 0;
+      out[i] = mic + sys;
     }
 
     // 把混音块回传主线程（复制一份，脱离输出缓冲）

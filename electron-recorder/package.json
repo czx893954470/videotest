@@ -23,6 +23,8 @@
       "preload.js",
       "index.html",
       "renderer.js",
+      "wav-utils.js",
+      "mixer-processor.js",
       "package.json"
     ],
     "extraResources": [

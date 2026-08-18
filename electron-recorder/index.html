@@ -27,6 +27,7 @@
     .status.recording { background: #f39c12; color: #000; }
     .row { margin: 12px 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     label { font-size: 13px; color: #aaa; }
+    input[type="checkbox"] { accent-color: #3498db; cursor: pointer; }
     select, input[type="text"] {
       padding: 6px 10px; font-size: 13px; background: #2a2a4e;
       color: #eee; border: 1px solid #444; border-radius: 4px;
@@ -69,6 +70,11 @@
     <div class="header">
       <h1>实时语音识别（麦克风 + 系统音频）</h1>
       <span class="status disconnected" id="status">未连接</span>
+    </div>
+
+    <div class="row">
+      <label><input type="checkbox" id="useMic" checked> 麦克风</label>
+      <label><input type="checkbox" id="useSystem" checked> 系统音频</label>
     </div>
 
     <div class="row">
