@@ -1,0 +1,2 @@
+Capturing 2 device(s): 2 - LG HDR 4K (AMD High Definition Audio Device), ÑïÉùÆ÷ (Realtek(R) Audio)
+READY

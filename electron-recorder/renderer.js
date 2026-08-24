@@ -8,10 +8,8 @@
 
 
 // ---- DOM 引用 ----
-const deviceSelect = document.getElementById('device');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
-const refreshBtn = document.getElementById('refreshBtn');
 const statusSpan = document.getElementById('status');
 const infoEl = document.getElementById('info');
 const transcriptDiv = document.getElementById('transcript');
@@ -48,30 +46,22 @@ function setInfo(text) {
   infoEl.textContent = text;
 }
 
-// 根据复选框状态、设备加载情况、是否录音中，统一更新各控件的 disabled。
-// 取代原先散落在 loadDevices / startRecording / stopRecording 里的直接赋值。
+// 根据复选框状态、是否录音中，统一更新各控件的 disabled。
+// 取代原先散落在 startRecording / stopRecording 里的直接赋值。
 function updateControlsEnabled() {
   if (isRecording) {
     useMicCheckbox.disabled = true;
     useSystemCheckbox.disabled = true;
-    deviceSelect.disabled = true;
-    refreshBtn.disabled = true;
     startBtn.disabled = true;
     stopBtn.disabled = false;
     return;
   }
   const useMic = useMicCheckbox.checked;
   const useSystem = useSystemCheckbox.checked;
-  // 设备列表已加载完 = 下拉框有 option 且第一个不是"加载中…"
-  const devicesLoaded = deviceSelect.options.length > 0
-    && !deviceSelect.options[0].textContent.includes('加载中');
   useMicCheckbox.disabled = false;
   useSystemCheckbox.disabled = false;
-  // 系统音频未勾选时，设备下拉框和刷新按钮变灰
-  deviceSelect.disabled = !useSystem || !devicesLoaded;
-  refreshBtn.disabled = !useSystem;
-  // 开始按钮：至少勾一个源；勾了系统音频还要求设备已选
-  startBtn.disabled = (!useMic && !useSystem) || (useSystem && !deviceSelect.value);
+  // 开始按钮：至少勾一个源
+  startBtn.disabled = (!useMic && !useSystem);
   stopBtn.disabled = true;
 }
 
@@ -180,50 +170,15 @@ function connectWebSocket() {
   });
 }
 
-// 拉取系统输出设备列表填到下拉框。Electron 主进程通过 window.api.getDevices() 提供。
-async function loadDevices() {
-  deviceSelect.disabled = true;
-  startBtn.disabled = true;
-  refreshBtn.disabled = true;
-  deviceSelect.innerHTML = '<option>加载中…</option>';
-  setStatus('加载设备…', 'disconnected');
-  try {
-    const devices = await window.api.getDevices();
-    deviceSelect.innerHTML = '';
-    if (devices.length === 0) {
-      setInfo('未发现任何输出设备。');
-      updateControlsEnabled();
-      return;
-    }
-    for (const d of devices) {
-      const opt = document.createElement('option');
-      opt.value = d.id;
-      opt.textContent = d.name;
-      deviceSelect.appendChild(opt);
-    }
-    updateControlsEnabled();
-    setStatus('就绪', 'disconnected');
-    setInfo(`发现 ${devices.length} 个输出设备。`);
-  } catch (e) {
-    setInfo(`加载设备失败：${e.message}`);
-    updateControlsEnabled();
-  }
-}
-
 // 启动一次完整录音。步骤顺序刻意安排：
 //   先连 WS（后端没起快速失败） → 选 WAV 路径 → 开麦克风 → 建 AudioContext+worklet
 //   → 接系统音频 IPC → 最后启动系统音频采集（启动后立刻有数据流）
 // 任何一步失败都走 cleanupPartial 回滚已申请的资源。
 async function startRecording() {
-  const deviceId = deviceSelect.value;
   const useMic = useMicCheckbox.checked;
   const useSystem = useSystemCheckbox.checked;
   if (!useMic && !useSystem) {
     setInfo('请至少选择一个音频源。');
-    return;
-  }
-  if (useSystem && !deviceId) {
-    setInfo('请先选择系统音频设备。');
     return;
   }
 
@@ -285,17 +240,34 @@ async function startRecording() {
     // worklet 每算出一帧 Float32 混音就 postMessage 出来；这里同时喂给 ASR 和 WAV 落盘。
     // ws.send 对 ArrayBuffer 是拷贝入队（不 transfer），所以 mixed 之后还能继续给 IPC 用。
     workletNode.port.onmessage = (e) => {
-      if (e.data.type !== 'mixed') return;
-      const mixed = e.data.samples;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(mixed.buffer);
+      if (e.data.type === 'mixed') {
+        const mixed = e.data.samples;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(mixed.buffer);
+        }
+        window.api.sendMixedChunk(mixed);
+      } else if (e.data.type === 'debug-levels') {
+        console.log('[worklet] mic=' + e.data.micMax +
+          ' sys=' + e.data.sysMax +
+          ' out=' + e.data.outMax +
+          ' ring=' + e.data.ringAvailable +
+          ' sysMsgCount=' + e.data.sysMsgCount +
+          ' lastSysLen=' + e.data.lastSysLen +
+          ' pushMax=' + e.data.lastPushMax +
+          ' ringAfterPush=' + e.data.ringAfterPush);
       }
-      window.api.sendMixedChunk(mixed);
     };
 
     // 6. 系统音频 IPC -> worklet 环形缓冲（可被复选框跳过）
     if (useSystem) {
+      let sysChunkCount = 0;
       unsubscribeSystemAudio = window.api.onSystemAudioChunk((f32) => {
+        sysChunkCount++;
+        if (sysChunkCount % 10 === 0) {
+          let max = 0;
+          for (let i = 0; i < f32.length; i++) { const v = Math.abs(f32[i]); if (v > max) max = v; }
+          console.log(`[renderer] system chunk #${sysChunkCount} samples=${f32.length} maxAmp=${max.toFixed(4)}`);
+        }
         if (workletNode) {
           // 复制一份，脱离 IPC 持有的缓冲再 transfer
           const copy = new Float32Array(f32.length);
@@ -328,7 +300,7 @@ async function startRecording() {
     // 9. 最后启动系统音频（启动后立刻有数据流）
     if (useSystem) {
       setInfo('启动系统音频采集…');
-      await window.api.startSystemAudio(deviceId);
+      await window.api.startSystemAudio();
     }
 
     isRecording = true;
@@ -398,7 +370,6 @@ async function stopRecording() {
 // ---- UI 事件绑定 ----
 startBtn.addEventListener('click', startRecording);
 stopBtn.addEventListener('click', stopRecording);
-refreshBtn.addEventListener('click', loadDevices);
 useMicCheckbox.addEventListener('change', updateControlsEnabled);
 useSystemCheckbox.addEventListener('change', updateControlsEnabled);
 
@@ -415,5 +386,7 @@ targetLangSelect.addEventListener('change', () => {
   }
 });
 
-// 启动时拉一次输出设备列表
-loadDevices();
+// 启动时初始化控件状态（没有 loadDevices 了，直接就是就绪态）
+updateControlsEnabled();
+setStatus('就绪', 'disconnected');
+setInfo('就绪。');

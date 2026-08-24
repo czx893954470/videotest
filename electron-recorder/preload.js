@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld('api', {
   getDevices: () => ipcRenderer.invoke('get-devices'),
 
   // ─── 系统音频流（送给 ASR）───
-  startSystemAudio: (deviceId) => ipcRenderer.invoke('start-system-audio', deviceId),
+  startSystemAudio: () => ipcRenderer.invoke('start-system-audio'),
   stopSystemAudio: () => ipcRenderer.invoke('stop-system-audio'),
   onSystemAudioChunk: (cb) => {
     const handler = (e, f32) => cb(f32);

@@ -20,12 +20,23 @@ class MixerProcessor extends AudioWorkletProcessor {
     this.writePos = 0;
     this.micEnabled = true;
     this.systemEnabled = true;
+    this._sysMsgCount = 0;
     this.port.onmessage = (e) => {
       if (e.data.type === 'config') {
         this.micEnabled = e.data.mic;
         this.systemEnabled = e.data.system;
       } else if (e.data.type === 'system') {
+        this._sysMsgCount++;
+        this._lastSysSamplesLen = e.data.samples ? e.data.samples.length : -1;
+        // 调试：记录推入数据的最大振幅
+        let max = 0;
+        for (let i = 0; i < e.data.samples.length; i++) {
+          const v = Math.abs(e.data.samples[i]);
+          if (v > max) max = v;
+        }
+        this._lastPushMax = max;
         this._pushRing(e.data.samples);
+        this._ringAfterPush = (this.writePos - this.readPos + RING_SIZE) % RING_SIZE;
       }
     };
   }
@@ -69,10 +80,30 @@ class MixerProcessor extends AudioWorkletProcessor {
     this._readRing(this._sysTemp, out.length);
 
     // 满增益混音：启用的源各以 1.0 相加。两源都开时可能削波，由用户选择。
+    let micMax = 0, sysMax = 0, outMax = 0;
     for (let i = 0; i < out.length; i++) {
       const mic = (this.micEnabled && micCh) ? micCh[i] : 0;
       const sys = this.systemEnabled ? this._sysTemp[i] : 0;
       out[i] = mic + sys;
+      if (Math.abs(mic) > micMax) micMax = Math.abs(mic);
+      if (Math.abs(sys) > sysMax) sysMax = Math.abs(sys);
+      if (Math.abs(out[i]) > outMax) outMax = Math.abs(out[i]);
+    }
+
+    // 调试：每 ~100 块（约 800ms）发一次振幅统计
+    this._debugCounter = (this._debugCounter || 0) + 1;
+    if (this._debugCounter % 100 === 0) {
+      this.port.postMessage({
+        type: 'debug-levels',
+        micMax: micMax.toFixed(4),
+        sysMax: sysMax.toFixed(4),
+        outMax: outMax.toFixed(4),
+        ringAvailable: (this.writePos - this.readPos + RING_SIZE) % RING_SIZE,
+        sysMsgCount: this._sysMsgCount,
+        lastSysLen: this._lastSysSamplesLen ?? -1,
+        lastPushMax: (this._lastPushMax ?? 0).toFixed(4),
+        ringAfterPush: this._ringAfterPush ?? 0,
+      });
     }
 
     // 把混音块回传主线程（复制一份，脱离输出缓冲）

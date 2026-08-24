@@ -34,6 +34,7 @@ function createWindow() {
     },
   });
   mainWindow.loadFile('index.html');
+  mainWindow.webContents.openDevTools();
   // 窗口关闭时清空引用，避免持有已销毁对象
   mainWindow.on('closed', () => { mainWindow = null; });
 }
@@ -203,26 +204,29 @@ ipcMain.handle('stop-recording', async () => {
 });
 
 // ─── System audio streaming (for ASR) ───────────────────────────────
-// Spawns capture.exe in stream mode, forwards stdout float32 PCM to renderer.
-// capture.exe stream <deviceId> 输出 16kHz mono float32 PCM 到 stdout，
-// READY 信号走 stderr。主进程把 stdout 二进制块转发给渲染进程。
+// Spawns capture.exe in stream-all mode, forwards stdout float32 PCM to renderer.
+// capture.exe stream-all 枚举所有 ACTIVE render endpoints，各自重采样后内部混音，
+// 输出 16kHz mono float32 PCM 到 stdout；READY 信号走 stderr。主进程把 stdout 二进制
+// 块转发给渲染进程；stderr 每行透传到主进程控制台（开发者可见抓了几台、哪台失败）。
 
-ipcMain.handle('start-system-audio', async (event, deviceId) => {
+ipcMain.handle('start-system-audio', async (event) => {
   if (captureProcess) {
     throw new Error('capture.exe already running');
   }
-  if (!deviceId) {
-    throw new Error('deviceId required');
-  }
 
   return new Promise((resolve, reject) => {
-    const child = spawn(CAPTURE_EXE, ['stream', deviceId]);
+    const child = spawn(CAPTURE_EXE, ['stream-all']);
     let ready = false;
     let stderr = '';
 
     child.stderr.on('data', d => {
       const text = d.toString();
       stderr += text;
+      // 把每行 stderr 透传到主进程控制台：开发者能看到抓了几台、哪台失败
+      for (const line of text.split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed) console.log('[capture]', trimmed);
+      }
       // capture.exe 初始化完成后在 stderr 输出 READY
       if (!ready && text.includes('READY')) {
         ready = true;
@@ -232,12 +236,19 @@ ipcMain.handle('start-system-audio', async (event, deviceId) => {
     });
 
     // 把 stdout 二进制块作为 Float32Array 转发给渲染进程
+    let systemChunkCount = 0;
     child.stdout.on('data', buf => {
       if (!ready) return; // READY 之前不应有数据，保险起见过滤
+      const f32 = new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+      // 调试：每 10 块打印一次系统音频振幅（0=静音，>0.01 基本能听到）
+      systemChunkCount++;
+      if (systemChunkCount % 10 === 0) {
+        let max = 0;
+        for (let i = 0; i < f32.length; i++) { const v = Math.abs(f32[i]); if (v > max) max = v; }
+        console.log(`[main] system audio chunk #${systemChunkCount} samples=${f32.length} maxAmp=${max.toFixed(4)}`);
+      }
       if (mainWindow && !mainWindow.isDestroyed()) {
-        // 切出新 ArrayBuffer（底层 Buffer 可能被复用）
-        const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-        mainWindow.webContents.send('system-audio-chunk', new Float32Array(ab));
+        mainWindow.webContents.send('system-audio-chunk', f32);
       }
     });
 
@@ -248,7 +259,7 @@ ipcMain.handle('start-system-audio', async (event, deviceId) => {
     child.on('close', code => {
       captureProcess = null;
       if (!ready) {
-        reject(new Error(`capture.exe stream 启动失败（exit ${code}）：${stderr}`));
+        reject(new Error(`capture.exe stream-all 启动失败（exit ${code}）：${stderr}`));
         return;
       }
       // 通知渲染进程流已结束（录音中途结束可能是设备被拔）
