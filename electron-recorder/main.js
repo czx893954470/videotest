@@ -34,7 +34,6 @@ function createWindow() {
     },
   });
   mainWindow.loadFile('index.html');
-  mainWindow.webContents.openDevTools();
   // 窗口关闭时清空引用，避免持有已销毁对象
   mainWindow.on('closed', () => { mainWindow = null; });
 }
@@ -236,19 +235,12 @@ ipcMain.handle('start-system-audio', async (event) => {
     });
 
     // 把 stdout 二进制块作为 Float32Array 转发给渲染进程
-    let systemChunkCount = 0;
     child.stdout.on('data', buf => {
       if (!ready) return; // READY 之前不应有数据，保险起见过滤
-      const f32 = new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
-      // 调试：每 10 块打印一次系统音频振幅（0=静音，>0.01 基本能听到）
-      systemChunkCount++;
-      if (systemChunkCount % 10 === 0) {
-        let max = 0;
-        for (let i = 0; i < f32.length; i++) { const v = Math.abs(f32[i]); if (v > max) max = v; }
-        console.log(`[main] system audio chunk #${systemChunkCount} samples=${f32.length} maxAmp=${max.toFixed(4)}`);
-      }
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('system-audio-chunk', f32);
+        // 切出新 ArrayBuffer（底层 Buffer 可能被复用）
+        const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        mainWindow.webContents.send('system-audio-chunk', new Float32Array(ab));
       }
     });
 

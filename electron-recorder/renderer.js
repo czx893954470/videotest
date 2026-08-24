@@ -240,34 +240,17 @@ async function startRecording() {
     // worklet 每算出一帧 Float32 混音就 postMessage 出来；这里同时喂给 ASR 和 WAV 落盘。
     // ws.send 对 ArrayBuffer 是拷贝入队（不 transfer），所以 mixed 之后还能继续给 IPC 用。
     workletNode.port.onmessage = (e) => {
-      if (e.data.type === 'mixed') {
-        const mixed = e.data.samples;
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(mixed.buffer);
-        }
-        window.api.sendMixedChunk(mixed);
-      } else if (e.data.type === 'debug-levels') {
-        console.log('[worklet] mic=' + e.data.micMax +
-          ' sys=' + e.data.sysMax +
-          ' out=' + e.data.outMax +
-          ' ring=' + e.data.ringAvailable +
-          ' sysMsgCount=' + e.data.sysMsgCount +
-          ' lastSysLen=' + e.data.lastSysLen +
-          ' pushMax=' + e.data.lastPushMax +
-          ' ringAfterPush=' + e.data.ringAfterPush);
+      if (e.data.type !== 'mixed') return;
+      const mixed = e.data.samples;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(mixed.buffer);
       }
+      window.api.sendMixedChunk(mixed);
     };
 
     // 6. 系统音频 IPC -> worklet 环形缓冲（可被复选框跳过）
     if (useSystem) {
-      let sysChunkCount = 0;
       unsubscribeSystemAudio = window.api.onSystemAudioChunk((f32) => {
-        sysChunkCount++;
-        if (sysChunkCount % 10 === 0) {
-          let max = 0;
-          for (let i = 0; i < f32.length; i++) { const v = Math.abs(f32[i]); if (v > max) max = v; }
-          console.log(`[renderer] system chunk #${sysChunkCount} samples=${f32.length} maxAmp=${max.toFixed(4)}`);
-        }
         if (workletNode) {
           // 复制一份，脱离 IPC 持有的缓冲再 transfer
           const copy = new Float32Array(f32.length);
